@@ -90,8 +90,11 @@ python test_rules.py      # perft checks of the rules engine
 
 Retraining the base model: `python preprocess.py games.pgn.zst --out data_base --min-elo 1800` then `python train.py --data data_base --channels 64 --blocks 4`, and copy the checkpoint to `models/base.pt`.
 
+## License
+
+* **Code and base model:** [CC0 1.0 Universal](LICENSE) – public-domain dedication, do whatever you like.
+* **Piece images** (`chesstwin/static/pieces/`, `assets/`): by Uray M. János from [greenchess.net](https://greenchess.net/info.php?item=downloads), licensed [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/) – *not* CC0. Keep the attribution and share modified versions under the same license. See `ATTRIBUTION.md` next to the images.
+
 ## Notes
 
-* No license has been chosen yet – add a `LICENSE` file before publishing.
-* The piece images in `chesstwin/static/pieces/` (copied from `assets/`) should have their source and license confirmed before a public release.
 * Not affiliated with Lichess. Please respect the [Lichess API terms](https://lichess.org/terms-of-service); the app downloads one user's games per request, one request at a time.
