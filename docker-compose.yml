@@ -6,5 +6,15 @@ services:
     volumes:
       - chesstwin-data:/data       # your twins live here and survive restarts / rebuilds
     restart: unless-stopped
+  # Developer-only: manual training pipeline, e.g.
+  #   docker compose run --rm train python preprocess.py /work/games.pgn.zst --out /work/data
+  train:
+    build: .
+    profiles: ["train"]
+    working_dir: /app
+    volumes:
+      - ./work:/work               # put your PGN here; datasets and checkpoints are written here too
+    entrypoint: []
+    command: ["python", "train.py", "--help"]
 volumes:
   chesstwin-data:

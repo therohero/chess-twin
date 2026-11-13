@@ -9,3 +9,4 @@ db.pgn.zst
 *.pgn*
 *.log
 tests
+work

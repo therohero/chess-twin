@@ -11,3 +11,4 @@ db.pgn.zst
 *.pgn
 *.pgn.zst
 *.log
+work/

@@ -88,7 +88,66 @@ python -m pytest          # API, training, SAN, Lichess streaming (against a loc
 python test_rules.py      # perft checks of the rules engine
 ```
 
-Retraining the base model: `python preprocess.py games.pgn.zst --out data_base --elo-range 1800-2400` (`--elo-mode both|avg|either` picks how the range applies; `--elo-bin 200` sorts games into per-band subdirectories) then `python train.py --data data_base --channels 64 --blocks 4`, and copy the checkpoint to `models/base.pt`.
+## Training a model manually (for developers)
+
+> **Note:** this section is mainly for developers and curious people. You do **not** need it to use Chess Twin – the app already ships a base model (`models/base.pt`) and fine-tunes it on your games automatically. Use this only if you want to train your own base model from a PGN database.
+
+The pipeline has two steps: `preprocess.py` turns games into training shards, `train.py` trains the network on them.
+
+### 1. Get a dataset
+
+Any PGN works (`.pgn`, `.pgn.zst`, `.pgn.bz2`). A good source is the [Lichess open database](https://database.lichess.org/) (`lichess_db_standard_rated_YYYY-MM.pgn.zst`, several GB; no need to unpack it – it is streamed). Games must contain moves; Elo headers are used for filtering.
+
+### 2. Preprocess
+
+```bash
+pip install zstandard      # only needed for .pgn.zst when the `zstd` CLI is not installed
+python preprocess.py games.pgn.zst --out data_base --elo-range 1800-2400
+```
+
+| Option | Meaning |
+|---|---|
+| `--elo-range MIN-MAX` | keep games in this rating range (or `--min-elo` / `--max-elo`) |
+| `--elo-mode both\|avg\|either` | how the range applies to the two players (default `both`) |
+| `--elo-bin N` | sort games into per-band subdirectories, e.g. `--elo-bin 200` |
+| `--max-games N` | stop after N games (handy for a quick test) |
+| `--skip-plies N` | don't train on the first N plies (opening theory) |
+| `--no-forfeit` | drop games ended by time forfeit/abandonment |
+| `--workers N` | parallel processes (default: all cores) |
+
+### 3. Train
+
+```bash
+python train.py --data data_base --channels 64 --blocks 4 --epochs 3 --out checkpoints/model.pt
+```
+
+Other useful flags: `--batch-size`, `--lr`, `--val-size`, `--max-games` (quick test run) and `--resume checkpoints/last.pt`. The best checkpoint by held-out top-1 accuracy is written to `--out`; `last.pt` next to it allows resuming. A GPU is used automatically if available; on CPU expect it to be slow for large datasets, so start with `--max-games 20000` to try things out.
+
+To use the result in the app, copy it over the base model (or point to it without overwriting):
+
+```bash
+cp checkpoints/model.pt models/base.pt
+# or: CHESSTWIN_BASE_MODEL=checkpoints/model.pt python -m chesstwin
+```
+
+Use the same `--channels` / `--blocks` you trained with; the app reads them from the checkpoint. The shipped base model uses 64 channels × 4 blocks.
+
+### With Docker
+
+The image contains `preprocess.py` and `train.py` (plus `zstandard`). Put your PGN into a `./work` folder and run the `train` service; datasets and checkpoints are written back to `./work`:
+
+```bash
+mkdir -p work && cp ~/Downloads/games.pgn.zst work/
+
+# CPU
+docker compose run --rm train python preprocess.py /work/games.pgn.zst --out /work/data --elo-range 1800-2400
+docker compose run --rm train python train.py --data /work/data --channels 64 --blocks 4 --out /work/checkpoints/model.pt
+
+# NVIDIA GPU (training is much faster)
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml run --rm train python train.py --data /work/data --channels 64 --blocks 4 --out /work/checkpoints/model.pt
+```
+
+Then `cp work/checkpoints/model.pt models/base.pt` and rebuild (`docker compose up --build`), or mount it and set `CHESSTWIN_BASE_MODEL`.
 
 ## License
 
