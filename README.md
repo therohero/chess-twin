@@ -88,7 +88,7 @@ python -m pytest          # API, training, SAN, Lichess streaming (against a loc
 python test_rules.py      # perft checks of the rules engine
 ```
 
-Retraining the base model: `python preprocess.py games.pgn.zst --out data_base --min-elo 1800` then `python train.py --data data_base --channels 64 --blocks 4`, and copy the checkpoint to `models/base.pt`.
+Retraining the base model: `python preprocess.py games.pgn.zst --out data_base --elo-range 1800-2400` (`--elo-mode both|avg|either` picks how the range applies; `--elo-bin 200` sorts games into per-band subdirectories) then `python train.py --data data_base --channels 64 --blocks 4`, and copy the checkpoint to `models/base.pt`.
 
 ## License
 
