@@ -1,0 +1,10 @@
+services:
+  chesstwin:
+    build: .
+    ports:
+      - "127.0.0.1:8000:8000"     # only reachable from this machine; change to "8000:8000" to share on your network
+    volumes:
+      - chesstwin-data:/data       # your twins live here and survive restarts / rebuilds
+    restart: unless-stopped
+volumes:
+  chesstwin-data:

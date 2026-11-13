@@ -1,0 +1,11 @@
+.venv
+.git
+__pycache__
+.pytest_cache
+data
+data_test
+checkpoints
+db.pgn.zst
+*.pgn*
+*.log
+tests

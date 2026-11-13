@@ -1,0 +1,15 @@
+# NVIDIA GPU: docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+# Needs the NVIDIA Container Toolkit on the host. Works on older cards too (e.g. GTX 10-series) thanks to the CUDA 12.4 image.
+services:
+  chesstwin:
+    build:
+      args:
+        BASE_IMAGE: pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime
+        INSTALL_TORCH: "0"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

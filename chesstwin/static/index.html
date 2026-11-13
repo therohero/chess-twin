@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chess Twin</title>
+<meta name="description" content="Play chess against an AI trained on your own Lichess games.">
+<link rel="icon" href="/static/pieces/white-knight.png">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="#" id="brand"><img src="/static/pieces/white-knight.png" alt=""><span>Chess&nbsp;Twin</span></a>
+  <span class="badge" id="device-badge" title="Where the AI runs">…</span>
+</header>
+
+<main>
+<!-- ============================== SETUP ============================== -->
+<section id="view-setup" class="view">
+  <div class="hero">
+    <h1>Play against <em>yourself</em>.</h1>
+    <p>Enter your Lichess username. We download your games, teach an AI your style (openings, habits, even your mistakes) and you play it right here. Everything runs on your own computer.</p>
+  </div>
+
+  <form id="setup-form" class="card" autocomplete="off">
+    <label class="field">
+      <span>Lichess username</span>
+      <input id="username" name="username" placeholder="e.g. DrNykterstein" maxlength="30" spellcheck="false" autocapitalize="off" required>
+    </label>
+    <div id="setup-error" class="notice error" hidden></div>
+
+    <details class="advanced">
+      <summary>Options</summary>
+      <div class="grid2">
+        <div class="field">
+          <span>Time controls <small>(skip bullet for cleaner moves)</small></span>
+          <div class="chips" id="tc-chips">
+            <label class="chip"><input type="checkbox" value="bullet"><span>Bullet</span></label>
+            <label class="chip"><input type="checkbox" value="blitz" checked><span>Blitz</span></label>
+            <label class="chip"><input type="checkbox" value="rapid" checked><span>Rapid</span></label>
+            <label class="chip"><input type="checkbox" value="classical" checked><span>Classical</span></label>
+          </div>
+        </div>
+        <div class="field">
+          <span>Learn from games as</span>
+          <div class="seg" id="color-seg">
+            <label><input type="radio" name="color" value="any" checked><span>Both</span></label>
+            <label><input type="radio" name="color" value="white"><span>White</span></label>
+            <label><input type="radio" name="color" value="black"><span>Black</span></label>
+          </div>
+        </div>
+        <div class="field">
+          <span>Games to download: <b id="max-games-val">500</b> <small>(more = better twin, slower)</small></span>
+          <input type="range" id="max-games" min="100" max="3000" step="100" value="500">
+        </div>
+        <div class="field">
+          <span>Training</span>
+          <div class="seg" id="mode-seg">
+            <label><input type="radio" name="mode" value="finetune" checked><span>Fine-tune <small>recommended</small></span></label>
+            <label><input type="radio" name="mode" value="fresh"><span>From scratch</span></label>
+          </div>
+        </div>
+      </div>
+      <label class="check"><input type="checkbox" id="rated-only"> Rated games only</label>
+      <p class="hint">Fine-tuning starts from a model that already knows chess and adapts it to you, so it works with a few hundred games. Training from scratch needs thousands.</p>
+    </details>
+
+    <button class="btn primary big" type="submit" id="create-btn">Create my twin</button>
+  </form>
+
+  <div id="profiles-wrap">
+    <h2>Or play someone you've already made</h2>
+    <div id="profiles" class="profiles"></div>
+  </div>
+  <p class="foot">Games go straight from Lichess to this machine. Nothing is uploaded anywhere.</p>
+</section>
+
+<!-- ============================== TRAINING ============================== -->
+<section id="view-train" class="view" hidden>
+  <div class="card center">
+    <h1 id="train-title">Building your twin…</h1>
+    <ol class="steps" id="steps">
+      <li data-phase="download"><i>1</i><span>Download games</span></li>
+      <li data-phase="train"><i>2</i><span>Learn your style</span></li>
+      <li data-phase="save"><i>3</i><span>Save</span></li>
+    </ol>
+    <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100"><div id="bar-fill"></div></div>
+    <p id="train-msg" class="msg">Starting…</p>
+    <p id="train-sub" class="hint"></p>
+    <div id="train-error" class="notice error" hidden></div>
+    <div id="train-done" hidden>
+      <div id="train-stats" class="stats"></div>
+      <button class="btn primary big" id="play-new">Play against your twin</button>
+    </div>
+    <div class="row">
+      <button class="btn" id="train-cancel">Cancel</button>
+      <button class="btn" id="train-back" hidden>Back</button>
+    </div>
+  </div>
+</section>
+
+<!-- ============================== PLAY ============================== -->
+<section id="view-play" class="view" hidden>
+  <div class="play">
+    <div class="board-col">
+      <div class="player" id="opp-bar"><span class="avatar" id="opp-avatar">AI</span><b id="opp-name">Opponent</b><span class="think" id="think" hidden>thinking<i>.</i><i>.</i><i>.</i></span></div>
+      <div class="board-wrap">
+        <div id="board" class="board" aria-label="Chess board"></div>
+        <div id="promo" class="promo" hidden></div>
+        <div id="gameover" class="gameover" hidden>
+          <div class="go-title" id="go-title"></div>
+          <div class="go-sub" id="go-sub"></div>
+          <div class="row"><button class="btn primary" id="go-new">New game</button><button class="btn" id="go-close">View board</button></div>
+        </div>
+      </div>
+      <div class="player" id="me-bar"><span class="avatar me">You</span><b>You</b></div>
+    </div>
+
+    <aside class="side card">
+      <div id="status" class="status">Your move</div>
+      <div class="moves" id="moves" aria-label="Moves"></div>
+
+      <div class="field">
+        <span>Playing style: <b id="style-label">Like you</b></span>
+        <input type="range" id="style" min="0" max="100" step="5" value="50" aria-label="Playing style">
+        <div class="scale"><span>Strongest</span><span>Like you</span><span>Looser</span></div>
+        <p class="hint" id="style-hint"></p>
+      </div>
+
+      <div class="row wrap">
+        <button class="btn" id="btn-undo">Undo</button>
+        <button class="btn" id="btn-flip">Flip</button>
+        <button class="btn" id="btn-resign">Resign</button>
+      </div>
+      <div class="row wrap">
+        <button class="btn primary" id="btn-new">New game</button>
+        <button class="btn" id="btn-menu">Change opponent</button>
+      </div>
+    </aside>
+  </div>
+</section>
+</main>
+
+<dialog id="newgame-dialog">
+  <form method="dialog" class="card dlg">
+    <h2>New game</h2>
+    <p>Play as…</p>
+    <div class="row">
+      <button class="btn big" value="white">White</button>
+      <button class="btn big" value="black">Black</button>
+      <button class="btn big" value="random">Random</button>
+    </div>
+    <button class="btn link" value="cancel">Cancel</button>
+  </form>
+</dialog>
+<div id="toast" class="toast" hidden></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

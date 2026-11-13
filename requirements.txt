@@ -1,0 +1,6 @@
+numpy
+torch
+fastapi
+uvicorn
+requests
+# optional: pygame (desktop play.py), zstandard (only for preprocess.py on .pgn.zst without the zstd CLI)

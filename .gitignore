@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+# your personal models and downloaded data
+data/
+# training-pipeline artefacts (large)
+data_test/
+checkpoints/
+db.pgn.zst
+*.pgn
+*.pgn.zst
+*.log
