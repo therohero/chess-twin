@@ -22,10 +22,11 @@ def _split(data, every=10):
 
 def _tensors(data, mask, device):
     return (torch.from_numpy(data["squares"][mask]).to(device), torch.from_numpy(data["meta"][mask]).to(device),
+            torch.from_numpy(data["hist"][mask]).to(device),
             torch.from_numpy(data["move"][mask].astype(np.int64)).to(device))
 
 
-def _evaluate(net, vs, vm, vy):
+def _evaluate(net, vs, vm, vh, vy):
     """-> (top-1 accuracy, mean log-loss) on the validation moves, or (None, None) without validation data."""
     if len(vy) == 0:
         return None, None
@@ -34,7 +35,7 @@ def _evaluate(net, vs, vm, vy):
     hit, nll = 0, 0.0
     with torch.no_grad():
         for i in range(0, len(vy), 2048):
-            lg, y = net(vs[i:i + 2048], vm[i:i + 2048]), vy[i:i + 2048]
+            lg, y = net(vs[i:i + 2048], vm[i:i + 2048], vh[i:i + 2048]), vy[i:i + 2048]
             hit += (lg.argmax(1) == y).sum().item()
             nll += F.cross_entropy(lg, y, reduction="sum").item()
     net.train(was_training)
@@ -48,12 +49,12 @@ def train_profile(data, out_path, base_path, mode="finetune", device="cpu", prog
         raise ValueError(f"Only {n_total} of your moves were found - at least {MIN_POSITIONS} are needed. "
                          "Download more games or relax the filters.")
     tr, va = _split(data)
-    ts, tm, ty = _tensors(data, tr, device)
-    vs, vm, vy = _tensors(data, va, device)
+    ts, tm, th, ty = _tensors(data, tr, device)
+    vs, vm, vh, vy = _tensors(data, va, device)
     n = len(ty)
 
     base = load_model(base_path, device) if base_path else None
-    base_top1, base_nll = _evaluate(base, vs, vm, vy) if base is not None else (None, None)
+    base_top1, base_nll = _evaluate(base, vs, vm, vh, vy) if base is not None else (None, None)
     if mode == "fresh":
         net = ChessNet(**(base.config if base is not None else {})).to(device)
         lr, epochs = 2e-3, int(np.clip(round(400_000 / n), 6, 30))
@@ -82,7 +83,7 @@ def train_profile(data, out_path, base_path, mode="finetune", device="cpu", prog
             if cancel is not None and cancel.is_set():
                 raise InterruptedError("cancelled")
             idx = perm[st * bs:(st + 1) * bs]
-            loss = F.cross_entropy(net(ts[idx], tm[idx]), ty[idx])
+            loss = F.cross_entropy(net(ts[idx], tm[idx], th[idx]), ty[idx])
             opt.zero_grad(set_to_none=True)
             loss.backward()
             opt.step()
@@ -91,7 +92,7 @@ def train_profile(data, out_path, base_path, mode="finetune", device="cpu", prog
             if progress and st % 10 == 0:
                 done = ep * steps + st
                 progress(done / (steps * epochs), f"Epoch {ep + 1}/{epochs} - loss {run:.2f}")
-        acc, nll = _evaluate(net, vs, vm, vy)
+        acc, nll = _evaluate(net, vs, vm, vh, vy)
         score = nll if nll is not None else -float("inf")  # no validation games: just keep the latest weights
         if score <= best_nll:
             best_nll, best_top1, best_epoch = score, acc, ep + 1
@@ -113,17 +114,18 @@ LEARN_STEPS = 12
 def learn_from_game(samples, model_path, out_path, device="cpu"):
     """Nudge an existing twin towards the human's moves of one analysed game, weighted per move.
 
-    samples: dict from chesstwin.analysis.training_samples (squares, meta, move, weight).
+    samples: dict from chesstwin.analysis.training_samples (squares, meta, move, hist, weight).
     Writes the updated checkpoint to out_path and returns {"positions", "loss_before", "loss_after"}.
     """
     net = load_model(model_path, device)       # eval mode: batch-norm statistics stay frozen (the batch is tiny)
     s = torch.from_numpy(samples["squares"]).to(device)
+    h = torch.from_numpy(samples["hist"]).to(device)
     m = torch.from_numpy(samples["meta"]).to(device)
     y = torch.from_numpy(samples["move"]).to(device)
     w = torch.from_numpy(samples["weight"]).to(device)
 
     def loss_fn():
-        return (F.cross_entropy(net(s, m), y, reduction="none") * w).mean()
+        return (F.cross_entropy(net(s, m, h), y, reduction="none") * w).mean()
     with torch.no_grad():
         before = loss_fn().item()
     opt = torch.optim.AdamW(net.parameters(), lr=LEARN_LR, weight_decay=0.0)

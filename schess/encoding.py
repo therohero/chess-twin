@@ -34,7 +34,10 @@ def encode_move(m, turn):
 # History = the last K moves before the position, as int16 from*64+to in the CURRENT mover's perspective
 # (newest first, -1 = no move: start of the game or of the recorded data). Promotion piece is dropped.
 
-def history_moves(board, k):
+HISTORY_MAX = 8   # history stored with every sample; a model uses the first `ChessNet.history` of them
+
+
+def history_moves(board, k=HISTORY_MAX):
     """-> int16[k] from board.stack (the moves played on this Board object)."""
     out = np.full(k, -1, np.int16)
     flip = 56 if board.turn == 1 else 0

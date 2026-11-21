@@ -28,6 +28,7 @@ import torch
 from chesstwin import config
 from chesstwin.analysis import DEFAULT_DEPTH, LABELS, StockfishError, UciEngine, analyse_game
 from chesstwin.engine import Engine
+from schess.encoding import HISTORY_MAX, sequence_history
 from schess.model import load_model
 from schess.rules import Board, move_uci
 
@@ -39,13 +40,14 @@ def prediction_accuracy(net, data_dir, n, device):
         return
     d = np.load(files[-1])
     n = min(n, len(d["move"]))
+    h = torch.from_numpy(sequence_history(d["move"][-n:], d["game"][-n:], HISTORY_MAX)).to(device)
     s, m, y = (torch.from_numpy(d["squares"][-n:]).to(device), torch.from_numpy(d["meta"][-n:]).to(device),
                torch.from_numpy(d["move"][-n:].astype(np.int64)).to(device))
     top1 = top5 = 0
     loss = 0.0
     with torch.no_grad():
         for i in range(0, n, 2048):
-            out = net(s[i:i + 2048], m[i:i + 2048])
+            out = net(s[i:i + 2048], m[i:i + 2048], h[i:i + 2048])
             t5 = out.topk(5, 1).indices
             top1 += (t5[:, 0] == y[i:i + 2048]).sum().item()
             top5 += (t5 == y[i:i + 2048, None]).any(1).sum().item()

@@ -1,6 +1,6 @@
 import random
 
-from .encoding import encode_move, encode_position
+from .encoding import encode_move, encode_position, history_moves
 
 
 class RandomBot:
@@ -28,7 +28,8 @@ class Bot:
         sq, meta = encode_position(board)
         with torch.no_grad():
             logits = self.net(torch.from_numpy(sq)[None].to(self.device),
-                              torch.tensor([int(meta)], dtype=torch.uint8, device=self.device))[0]
+                              torch.tensor([int(meta)], dtype=torch.uint8, device=self.device),
+                              torch.from_numpy(history_moves(board))[None].to(self.device))[0]
         idx = torch.tensor([encode_move(m, board.turn) for m in legal], device=self.device)
         scores = logits[idx].float()
         if self.temperature <= 0:

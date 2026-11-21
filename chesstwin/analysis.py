@@ -13,7 +13,7 @@ import threading
 
 import numpy as np
 
-from schess.encoding import encode_move, encode_position
+from schess.encoding import encode_move, encode_position, history_moves
 from schess.rules import Board, WHITE, move_uci
 
 from .san import to_san
@@ -247,18 +247,19 @@ def move_weights(analysis, human_color, w=None):
 
 
 def training_samples(analysis, human_color):
-    """-> dict(squares, meta, move, weight) for the human's moves in an analysed game, or None if empty."""
+    """-> dict(squares, meta, move, hist, weight) for the human's moves in an analysed game, or None if empty."""
     board = Board()
     turn_color = WHITE if human_color == "white" else BLACK
-    sq, meta, mv, idx = [], [], [], []
+    sq, meta, mv, hist, idx = [], [], [], [], []
     for m in analysis["moves"]:
         move = parse_uci(board, m["uci"])
         if board.turn == turn_color:
             s, mt = encode_position(board)
             sq.append(s); meta.append(mt); mv.append(encode_move(move, board.turn)); idx.append(m["ply"] - 1)
+            hist.append(history_moves(board))
         board.make(move)
     if not sq:
         return None
     wts = move_weights(analysis, human_color)
-    return {"squares": np.stack(sq), "meta": np.array(meta, np.uint8), "move": np.array(mv, np.int64),
+    return {"squares": np.stack(sq), "meta": np.array(meta, np.uint8), "move": np.array(mv, np.int64), "hist": np.stack(hist),
             "weight": wts.astype(np.float32)}

@@ -51,3 +51,28 @@ def test_history_model_uses_the_moves():
     none = net(sq, m)                                        # missing history = "no moves yet"
     assert torch.equal(none, net(sq, m, torch.full((1, 2), -1)))
     assert not torch.equal(none, net(sq, m, torch.tensor([[12 * 64 + 28, -1]])))
+
+
+def test_twin_training_and_play_with_a_history_model(tmp_path):
+    from chesstwin import lichess
+    from chesstwin.engine import Engine
+    from chesstwin.training import learn_from_game, train_profile
+    from conftest import make_pgn_games
+
+    base = tmp_path / "base.pt"
+    torch.save({"config": ChessNet(8, 1, history=4).config, "state_dict": ChessNet(8, 1, history=4).state_dict()}, base)
+    data = lichess.collect(make_pgn_games("alice", 40, plies=40), "alice", 40)
+    assert data["hist"].shape == (len(data["move"]), 8)
+    out = tmp_path / "twin.pt"
+    stats = train_profile(data, out, base, device="cpu")
+    assert stats["val_top1"] is not None and load_model(out).history == 4
+
+    class Store:
+        def model_path(self, pid):
+            return out
+    b = Board()
+    for _ in range(6):
+        b.make(Engine(Store(), "cpu").choose("t", b, 1.0))
+    samples = {"squares": data["squares"][:5], "meta": data["meta"][:5], "move": data["move"][:5].astype(np.int64),
+               "hist": data["hist"][:5], "weight": np.ones(5, np.float32)}
+    assert learn_from_game(samples, out, tmp_path / "t2.pt")["positions"] == 5

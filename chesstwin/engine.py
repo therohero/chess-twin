@@ -9,7 +9,7 @@ from collections import OrderedDict
 
 import torch
 
-from schess.encoding import encode_move, encode_position
+from schess.encoding import encode_move, encode_position, history_moves
 from schess.model import load_model
 from schess.search import root_scores
 
@@ -47,7 +47,8 @@ class Engine:
         with self._lock, torch.no_grad():
             net = self._net(pid)
             logits = net(torch.from_numpy(sq)[None].to(self.device),
-                         torch.tensor([int(meta)], dtype=torch.uint8, device=self.device))[0]
+                         torch.tensor([int(meta)], dtype=torch.uint8, device=self.device),
+                         torch.from_numpy(history_moves(board))[None].to(self.device))[0]
             idx = torch.tensor([encode_move(m, board.turn) for m in legal], device=self.device)
             scores = logits[idx].float().cpu()
         if search > 0 and len(legal) > 1:

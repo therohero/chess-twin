@@ -4,7 +4,7 @@ import re
 import numpy as np
 import requests
 
-from schess.encoding import encode_move, encode_position
+from schess.encoding import encode_move, encode_position, history_moves
 from schess.pgn import iter_games, movetext_to_sans, parse_san
 from schess.rules import Board, WHITE, BLACK
 
@@ -69,7 +69,8 @@ def _checked(lines, cancel):
 
 
 def game_samples(headers, text, username):
-    """-> (squares[N,64] int8, meta[N] uint8, moves[N] int16) for the moves `username` played, or None if unusable."""
+    """-> (squares[N,64] int8, meta[N] uint8, moves[N] int16, hist[N,HISTORY_MAX] int16) for the moves
+    `username` played, or None if unusable."""
     if headers.get("Variant", "Standard") not in ("Standard", "From Position") or "FEN" in headers:
         return None
     u = username.lower()
@@ -80,24 +81,25 @@ def game_samples(headers, text, username):
     else:
         return None
     board = Board()
-    sqs, metas, moves = [], [], []
+    sqs, metas, moves, hists = [], [], [], []
     try:
         for san in movetext_to_sans(text):
             m = parse_san(board, san)
             if board.turn == me:
                 sq, meta = encode_position(board)
                 sqs.append(sq); metas.append(meta); moves.append(encode_move(m, board.turn))
+                hists.append(history_moves(board))
             board.make(m)
     except (ValueError, KeyError, IndexError):
         pass   # keep whatever parsed before a bad token
     if not sqs:
         return None
-    return np.stack(sqs), np.array(metas, np.uint8), np.array(moves, np.int16)
+    return np.stack(sqs), np.array(metas, np.uint8), np.array(moves, np.int16), np.stack(hists)
 
 
 def collect(games, username, max_games, progress=None, cancel=None):
-    """Consume a games iterator -> dict(squares, meta, move, game, games, skipped)."""
-    S, M, V, G = [], [], [], []
+    """Consume a games iterator -> dict(squares, meta, move, hist, game, games, skipped)."""
+    S, M, V, H, G = [], [], [], [], []
     n_games = skipped = n_pos = 0
     for h, text in games:
         if cancel is not None and cancel.is_set():
@@ -106,12 +108,12 @@ def collect(games, username, max_games, progress=None, cancel=None):
         if s is None:
             skipped += 1
         else:
-            S.append(s[0]); M.append(s[1]); V.append(s[2]); G.append(np.full(len(s[2]), n_games, np.int32))
+            S.append(s[0]); M.append(s[1]); V.append(s[2]); H.append(s[3]); G.append(np.full(len(s[2]), n_games, np.int32))
             n_games += 1
             n_pos += len(s[2])
         if progress:
             progress(n_games + skipped, max_games, n_games, n_pos)
     if not S:
         raise LichessError("No usable games were found for these filters. Try more games or other time controls.")
-    return {"squares": np.concatenate(S), "meta": np.concatenate(M), "move": np.concatenate(V),
+    return {"squares": np.concatenate(S), "meta": np.concatenate(M), "move": np.concatenate(V), "hist": np.concatenate(H),
             "game": np.concatenate(G), "games": n_games, "skipped": skipped}
