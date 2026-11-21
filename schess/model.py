@@ -7,6 +7,17 @@ from .encoding import NUM_MOVES
 IN_CHANNELS = 17
 
 
+def history_planes(hist):
+    """hist: int16/long [B,K] of from*64+to (-1 = none) -> float [B,2K,8,8]: from-square and to-square per move."""
+    h = hist.long()
+    valid = (h >= 0).float()[..., None]
+    h = h.clamp(min=0)
+    fr = F.one_hot(h // 64, 64).float() * valid                       # [B,K,64]
+    to = F.one_hot(h % 64, 64).float() * valid
+    b, k = h.shape
+    return torch.stack([fr, to], 2).reshape(b, 2 * k, 8, 8)
+
+
 def make_planes(squares, meta):
     """squares: int8/long [B,64] (perspective-normalised), meta: uint8/long [B] -> float [B,17,8,8]"""
     b = squares.shape[0]
@@ -38,19 +49,28 @@ class Block(nn.Module):
 
 
 class ChessNet(nn.Module):
-    """Policy network: position -> logits over NUM_MOVES moves (from the mover's perspective)."""
+    """Policy network: position (+ optionally the last `history` moves) -> logits over NUM_MOVES moves (mover's view)."""
 
-    def __init__(self, channels=128, blocks=8):
+    def __init__(self, channels=128, blocks=8, history=0):
         super().__init__()
         self.config = {"channels": channels, "blocks": blocks}
-        self.stem = nn.Sequential(nn.Conv2d(IN_CHANNELS, channels, 3, padding=1, bias=False),
+        if history:
+            self.config["history"] = history     # old checkpoints have no key -> 0, so they load unchanged
+        self.history = history
+        self.stem = nn.Sequential(nn.Conv2d(IN_CHANNELS + 2 * history, channels, 3, padding=1, bias=False),
                                   nn.BatchNorm2d(channels), nn.ReLU())
         self.blocks = nn.Sequential(*[Block(channels) for _ in range(blocks)])
         self.head = nn.Sequential(nn.Conv2d(channels, 32, 1, bias=False), nn.BatchNorm2d(32), nn.ReLU(),
                                   nn.Flatten(), nn.Linear(32 * 64, NUM_MOVES))
 
-    def forward(self, squares, meta):
-        return self.head(self.blocks(self.stem(make_planes(squares, meta))))
+    def forward(self, squares, meta, hist=None):
+        """hist: [B,K>=history] last moves (see schess.encoding.history_moves); ignored by history-free models."""
+        x = make_planes(squares, meta)
+        if self.history:
+            if hist is None:
+                hist = torch.full((squares.shape[0], self.history), -1, dtype=torch.long, device=squares.device)
+            x = torch.cat([x, history_planes(hist[:, :self.history])], 1)
+        return self.head(self.blocks(self.stem(x)))
 
 
 def load_model(path, device="cpu"):
