@@ -47,6 +47,7 @@ class AnalysisReq(BaseModel):
 
 class BotReq(BaseModel):
     temperature: float = Field(1.0, ge=0.0, le=3.0)
+    search: int = Field(0, ge=0, le=3)   # blunder-check plies (0 = pure twin)
 
 
 def create_app(data_dir=None, base_model=None, device=None, games_source=None):
@@ -159,7 +160,7 @@ def create_app(data_dir=None, base_model=None, device=None, games_source=None):
     def bot_move(gid: str, req: BotReq = BotReq()):
         g = _game(gid)
         if g.bot_to_move:
-            g.apply(engine.choose(g.profile, g.board, req.temperature))
+            g.apply(engine.choose(g.profile, g.board, req.temperature, search=req.search))
         return g.state()
 
     @app.post("/api/games/{gid}/undo")

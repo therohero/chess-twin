@@ -3,7 +3,7 @@
 Play chess against an AI fine-tuned on your Lichess games. Python (FastAPI + PyTorch) backend, dependency-free vanilla-JS frontend, no build step. User-facing docs live in `README.md`; this file is the developer cheat sheet.
 
 ## Layout
-- `schess/` – self-contained chess core: `rules.py` (move gen, FEN, outcome; squares a1=0..h8=63, move = `(from, to, promo)`), `pgn.py` (PGN reader, SAN parser), `encoding.py` (position/move encoding, always from the side-to-move's view), `model.py` (residual CNN policy net, 4168 moves).
+- `schess/` – self-contained chess core: `rules.py` (move gen, FEN, outcome; squares a1=0..h8=63, move = `(from, to, promo)`), `pgn.py` (PGN reader, SAN parser), `encoding.py` (position/move encoding, always from the side-to-move's view), `model.py` (residual CNN policy net, 4168 moves), `search.py` (material alpha-beta + quiescence for the blunder check).
 - `chesstwin/` – the web app: `server.py` (REST API), `games.py` (in-memory games), `engine.py` (move choice by temperature), `training.py` (fine-tune a twin; `learn_from_game` = per-game weighted update), `lichess.py`, `profiles.py`, `jobs.py`, `analysis.py` (Stockfish/UCI client, move classification, weights), `static/` (UI).
 - Root scripts: `preprocess.py` + `train.py` (base model pipeline), `play.py` (old desktop UI), `analyze.py` (Stockfish analysis of a PGN/UCI game), `analyze_model.py` (how good is a model: top-k accuracy + Stockfish-rated self-play).
 - `models/base.pt` – shipped base model (tracked in git). `data/` (user twins) and `data_base/` (training shards) are not for commits.
@@ -21,6 +21,10 @@ python -m chesstwin --no-browser # run the app on :8000
 - API: `POST/GET /api/games/{id}/analysis` (background job, polled), `POST /api/games/{id}/learn`. Games keep `ucis`; any move/undo clears `game.analysis`.
 - Learning: weights depend on who was more accurate (`analysis.weighting`): player worse → mistakes up / good moves down; player better → good moves up / slips down; |gap| < 3 → neutral. Small update (12 AdamW steps at 1e-4, BN frozen), once per game, twins only.
 
+## Blunder check (search)
+- The net has no value head, so the search is material-only: `root_scores` (negamax depth 2/3 + capture quiescence, check evasions searched, node budget). Scores are absolute material from the mover's view, not deltas.
+- `Engine.choose(..., search=d)` keeps moves within `SEARCH_MARGIN` (150 cp) of the best, then samples by policy/temperature as usual. API: `bot-move` body `search` 0..3; UI "Blunder check" Off/Light(2)/Strong(3). `analyze_model.py --search`.
+
 ## Gotchas
 - `ProfileStore.save()` **moves** the model file it is given. Never pass it `models/base.pt` (a test once deleted the real base model this way) – copy first.
 - The generic opponent (`profile == "base"`) can be analysed but never learns.
@@ -29,6 +33,7 @@ python -m chesstwin --no-browser # run the app on :8000
 - Don't commit personal data: `data/`, `data_base/`, `*.pgn*`, `checkpoints/` are git-ignored (add `data_base/` if it shows up as untracked).
 
 ## Conventions
+- **Committing: never ask whether or when to commit.** When a coherent piece of work is finished and `python -m pytest` passes, commit it right away (on the current branch, `main` is fine), split into logical commits. Still never commit personal data (see Gotchas), and don't push unless asked.
 - Code and comments in English; small modules, docstring at the top explaining the purpose.
 - New behaviour needs a test in `tests/`; API tests use `TestClient(create_app(data_dir=tmp_path, base_model=BASE, device="cpu"))`.
 - Update `README.md` (user docs) when adding user-visible features or env vars.

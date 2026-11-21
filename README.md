@@ -44,6 +44,8 @@ Open http://localhost:8000. Twins are stored in the `chesstwin-data` volume, so 
 
 Under the hood this is the sampling temperature of the policy network (`slider / 50`).
 
+   **Blunder check** (Off / Light / Strong, default Off) – a small tactical search that runs before each bot move. It looks a few moves ahead (2 or 3 plies plus all captures) on material only and throws out candidate moves that lose more than about 1.5 pawns compared with the best one found; the twin then picks among the remaining moves in its usual style. *Light* stops it hanging pieces and walking into mate in one, *Strong* also sees forks and similar two-move tricks (up to a second or two per move). Off is the pure twin, mistakes included.
+
 5. **Game analysis** (needs [Stockfish](https://stockfishchess.org/download/)) – when a game ends, click **Analyse game**. Stockfish rates every move (best / excellent / good / inaccuracy / mistake / blunder), shows an accuracy score for you and the bot, an evaluation graph and the better move for every slip.
 6. **Teach your twin** – after an analysis you can let your twin learn from the game. It is fine-tuned briefly on *your* moves from that game, weighted by how good Stockfish found them, depending on who played better:
 
@@ -97,6 +99,7 @@ python analyze_model.py                                   # prediction accuracy 
 python analyze_model.py --model checkpoints/model.pt --games 20 --depth 12 --temps 0,0.5,1
 python analyze_model.py --skip-play                       # only top-1/top-5 on human moves (no Stockfish)
 python analyze_model.py --levels 0-20 --games 8 --max-plies 200   # play Stockfish skill levels 0..20, score per level
+python analyze_model.py --levels 0-5 --search 2            # the same with the app's blunder check (Light)
 ```
 
 It reports top-1/top-5 prediction accuracy on a preprocessed shard (`--data data_base`), then lets the model play itself at each temperature and has Stockfish rate every move it chose (accuracy, win-% lost per move, share of best moves / mistakes / blunders). With `--levels` it instead plays real matches against Stockfish skill levels 0-20 (colours alternate, 100 ms per Stockfish move) and prints W/D/L and score per level; the shipped base model scores about 50% at levels 0-1 and almost nothing above level 2.

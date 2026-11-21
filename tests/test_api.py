@@ -61,6 +61,10 @@ def test_train_then_play(client):
     g2 = client.post("/api/games", json={"profile": "base", "color": "black"}).json()
     b = client.post(f"/api/games/{g2['id']}/bot-move", json={"temperature": 0}).json()["moves"]
     assert a == b and len(a) == 1
+    # blunder check: accepted 0..3, rejected above
+    g3 = client.post("/api/games", json={"profile": "base", "color": "black"}).json()
+    assert len(client.post(f"/api/games/{g3['id']}/bot-move", json={"temperature": 0, "search": 2}).json()["moves"]) == 1
+    assert client.post(f"/api/games/{g3['id']}/bot-move", json={"search": 9}).status_code == 422
 
     assert client.delete("/api/profiles/alice").status_code == 200
     assert client.delete("/api/profiles/base").status_code == 404

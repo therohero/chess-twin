@@ -185,7 +185,7 @@ function drawBoard() {
     d.dataset.sq = sq;
     if (game.last && game.last.includes(sq)) d.classList.add("last");
     if (sq === selected) d.classList.add("sel");
-    if (game.check === sq) d.classList.add("check");
+    if (game.check === sq) d.classList.add("incheck");
     if (c === 0) { const t = document.createElement("span"); t.className = "coord r"; t.textContent = rank; d.append(t); }
     if (r === 7) { const t = document.createElement("span"); t.className = "coord f"; t.textContent = FILES[file]; d.append(t); }
     const p = pieces[sq];
@@ -298,7 +298,7 @@ async function botTurn() {
   if (!game.bot_to_move) return;
   busy = true; render_();
   const t0 = performance.now();
-  const g = await api(`/games/${game.id}/bot-move`, { body: { temperature: temperature() } });
+  const g = await api(`/games/${game.id}/bot-move`, { body: { temperature: temperature(), search: searchDepth() } });
   const left = 450 - (performance.now() - t0);
   if (left > 0) await wait(left);        // a tiny pause so moves don't feel instantaneous
   game = g; busy = false; render_();
@@ -328,6 +328,17 @@ function styleText() {
   $("#style-label").textContent = label; $("#style-hint").textContent = hint;
 }
 $("#style").oninput = () => { styleText(); store.set("style", +$("#style").value); };
+
+/* blunder check: plies of a small material search that vetoes moves losing material (0 = pure twin) */
+const searchDepth = () => +($("#search-seg input:checked")?.value || 0);
+function searchText() {
+  $("#search-hint").textContent = ({
+    0: "Off: plays purely in your style, including the pieces you'd hang.",
+    2: "Light: still your style, but never leaves a piece hanging or walks into mate in one.",
+    3: "Strong: also sees forks and other two-move tricks. Can take a second or two per move.",
+  })[searchDepth()];
+}
+$$("#search-seg input").forEach((i) => (i.onchange = () => { searchText(); store.set("search", searchDepth()); }));
 
 $("#btn-flip").onclick = () => { flipped = !flipped; render_(); };
 $("#btn-undo").onclick = async () => { if (busy) return; viewOver = false; selected = null; game = await api(`/games/${game.id}/undo`, { method: "POST" }); render_(); };
@@ -442,6 +453,7 @@ $("#an-back").onclick = () => { clearInterval(anTimer); viewOver = true; show("p
 /* ------------------------------------------------------------------ boot */
 (async function init() {
   $("#style").value = store.get("style", 50); styleText();
+  const sd = $(`#search-seg input[value="${store.get("search", 0)}"]`); if (sd) sd.checked = true; searchText();
   restoreForm();
   await loadStatus();
   try { await loadProfiles(); } catch { toast("Could not reach the Chess Twin server."); }

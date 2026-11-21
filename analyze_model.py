@@ -11,6 +11,7 @@
     python analyze_model.py --skip-play                       # accuracy only
     python analyze_model.py --data none                       # strength only
     python analyze_model.py --levels 0-20 --games 8           # match against Stockfish skill levels 0..20 (only that)
+    python analyze_model.py --levels 0-5 --search 2           # same, with the app's blunder check
 
 Temperature 0 = always the model's favourite move, 1 = sample like the training players, >1 = looser.
 Note: the held-out shard may overlap with the data the model was trained on if you trained on all shards.
@@ -53,6 +54,9 @@ def prediction_accuracy(net, data_dir, n, device):
     print(f"  top-1 {top1 / n:.1%}   top-5 {top5 / n:.1%}   cross-entropy {loss / n:.3f}\n")
 
 
+SEARCH = 0   # blunder-check plies for the model's moves (set by --search)
+
+
 class _Store:
     def __init__(self, path):
         self.path = __import__("pathlib").Path(path)
@@ -69,7 +73,7 @@ def play_game(engine, temperature, random_plies, max_plies, rnd):
         if not legal or board.outcome(legal):
             break
         t = 1.0 if len(ucis) < random_plies else temperature
-        m = engine.choose("m", board, t, legal)
+        m = engine.choose("m", board, t, legal, search=SEARCH)
         ucis.append(move_uci(m))
         board.make(m)
     return ucis
@@ -113,7 +117,8 @@ def match(net_path, device, level, games, movetime, model_temp, random_plies, ma
                 if not legal or board.outcome(legal):
                     break
                 if (board.turn == 0) == model_white:
-                    m = engine.choose("m", board, 1.0 if plies < random_plies else model_temp, legal)
+                    m = engine.choose("m", board, 1.0 if plies < random_plies else model_temp, legal,
+                                      search=0 if plies < random_plies else SEARCH)
                 else:
                     _, best = sf.analyse(board.fen(), movetime=movetime)
                     m = next(x for x in legal if move_uci(x) == best)
@@ -132,7 +137,8 @@ def match(net_path, device, level, games, movetime, model_temp, random_plies, ma
 def run_levels(args, device):
     lo, hi = (int(x) for x in args.levels.split("-"))
     print(f"Model vs Stockfish skill levels {lo}-{hi}: {args.games} games per level (colours alternate), "
-          f"Stockfish {args.movetime} ms/move, model T={args.model_temp}\n")
+          f"Stockfish {args.movetime} ms/move, model T={args.model_temp}, "
+          f"blunder check {args.search or 'off'}\n")
     print(f"{'level':>5} {'W':>3} {'D':>3} {'L':>3}  score")
     for lvl in range(lo, hi + 1):
         w, d, l = match(args.model, device, lvl, args.games, args.movetime, args.model_temp, args.random_plies,
@@ -155,8 +161,12 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--levels", help="match mode: play Stockfish skill levels, e.g. 0-20 (replaces the other checks)")
     ap.add_argument("--movetime", type=int, default=100, help="match mode: Stockfish milliseconds per move")
+    ap.add_argument("--search", type=int, default=0, choices=range(4),
+                    help="blunder-check plies for the model's moves (0 = pure policy, as in the app's default)")
     ap.add_argument("--model-temp", type=float, default=0.0, help="match mode: model temperature")
     args = ap.parse_args()
+    global SEARCH
+    SEARCH = args.search
     if not os.path.exists(args.model):
         sys.exit(f"model not found: {args.model}")
     device = "cuda" if torch.cuda.is_available() else "cpu"
