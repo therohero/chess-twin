@@ -76,6 +76,12 @@ class UciEngine:
                 return line.strip()
         raise StockfishError("Stockfish exited unexpectedly.")
 
+    def set_option(self, name, value):
+        with self._lock:
+            self._send(f"setoption name {name} value {value}")
+            self._send("isready")
+            self._wait("readyok")
+
     def analyse(self, fen, depth=DEFAULT_DEPTH, movetime=None):
         """Search `fen`. -> (score_cp from the side to move's view, best move in UCI or None). Mate = +-MATE_CP."""
         with self._lock:

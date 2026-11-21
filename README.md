@@ -60,7 +60,7 @@ A built-in **Generic opponent** (the base model) is always available, so you can
 ## How it works
 
 * **Model** – a residual CNN (64 channels × 4 blocks) that maps a position to a probability for each of 4,168 moves (`schess/model.py`). It is a *pure imitation* policy: no search, no evaluation. It plays like a person, not like Stockfish.
-* **Base model** – `models/base.pt`, trained on a large database of strong Lichess games with `preprocess.py` + `train.py` (reaches ~44% top-1 move prediction on held-out positions).
+* **Base model** – `models/base.pt`, trained on a large database of strong Lichess games with `preprocess.py` + `train.py` (predicts ~50% of human moves top-1 and ~88% within its top 5 on a sample from the last data shard, which may overlap its training data; as a pure imitation network without search it beats only Stockfish skill levels 0-2 – see *Checking the base model*).
 * **Personalising** – the app streams your games from the [Lichess export API](https://lichess.org/api#tag/Games/operation/apiGamesUser), keeps only positions where *you* were to move, holds out your last ~10% of games for validation, and fine-tunes with a small learning rate. The checkpoint with the best held-out accuracy is kept, and that includes the untouched base model, so fine-tuning can never make the twin worse at predicting you. The result card shows *your twin vs. the generic model* on held-out moves.
 * **Rules** – a self-contained, perft-tested rules engine (`schess/rules.py`); the backend is the single source of truth for legal moves.
 * **Stack** – FastAPI + PyTorch backend, dependency-free vanilla JS frontend (own board renderer, no CDN, works offline). No build step.
@@ -96,9 +96,10 @@ Install Stockfish with your package manager (`apt install stockfish`, `pacman -S
 python analyze_model.py                                   # prediction accuracy + Stockfish strength check
 python analyze_model.py --model checkpoints/model.pt --games 20 --depth 12 --temps 0,0.5,1
 python analyze_model.py --skip-play                       # only top-1/top-5 on human moves (no Stockfish)
+python analyze_model.py --levels 0-20 --games 8 --max-plies 200   # play Stockfish skill levels 0..20, score per level
 ```
 
-It reports top-1/top-5 prediction accuracy on a preprocessed shard (`--data data_base`), then lets the model play itself at each temperature and has Stockfish rate every move it chose (accuracy, win-% lost per move, share of best moves / mistakes / blunders).
+It reports top-1/top-5 prediction accuracy on a preprocessed shard (`--data data_base`), then lets the model play itself at each temperature and has Stockfish rate every move it chose (accuracy, win-% lost per move, share of best moves / mistakes / blunders). With `--levels` it instead plays real matches against Stockfish skill levels 0-20 (colours alternate, 100 ms per Stockfish move) and prints W/D/L and score per level; the shipped base model scores about 50% at levels 0-1 and almost nothing above level 2.
 
 ## Configuration
 
@@ -164,7 +165,7 @@ Other useful flags: `--batch-size`, `--lr`, `--val-size`, `--max-games` (quick t
 To use the result in the app, copy it over the base model (or point to it without overwriting):
 
 ```bash
-cp checkpoints/model.pt models/base.pt
+cp checkpoints/model.pt models/base.pt     # replaces the shipped base model
 # or: CHESSTWIN_BASE_MODEL=checkpoints/model.pt python -m chesstwin
 ```
 

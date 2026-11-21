@@ -1,6 +1,8 @@
 """Check how good a policy model (default: models/base.pt) is.
 
   1. Prediction accuracy: top-1 / top-5 on human moves from your preprocessed data (needs --data, no Stockfish).
+  3. Match mode (--levels): the model plays Stockfish at each "Skill Level" (0-20) and the score per level shows
+     where it stops winning.
   2. Playing strength: the model plays games against itself at several temperatures and Stockfish rates every
      move it chose (accuracy, win-% lost per move, share of best moves / mistakes / blunders).
 
@@ -8,6 +10,7 @@
     python analyze_model.py --model checkpoints/model.pt --games 20 --depth 12
     python analyze_model.py --skip-play                       # accuracy only
     python analyze_model.py --data none                       # strength only
+    python analyze_model.py --levels 0-20 --games 8           # match against Stockfish skill levels 0..20 (only that)
 
 Temperature 0 = always the model's favourite move, 1 = sample like the training players, >1 = looser.
 Note: the held-out shard may overlap with the data the model was trained on if you trained on all shards.
@@ -95,6 +98,48 @@ def strength(net_path, device, temps, games, depth, random_plies, max_plies, sf_
                   "  ".join(f"{k} {cnt[k]:.0%}" for k in ("best", "inaccuracy", "mistake", "blunder")) + f"   ({n} moves)")
 
 
+def match(net_path, device, level, games, movetime, model_temp, random_plies, max_plies, sf_path, seed):
+    """Model vs Stockfish at `Skill Level` level; colours alternate. -> (wins, draws, losses) from the model's view."""
+    engine = Engine(_Store(net_path), device)
+    w = d = l = 0
+    with UciEngine(sf_path) as sf:
+        sf.set_option("Skill Level", level)
+        for g in range(games):
+            torch.manual_seed(seed + g)
+            model_white = g % 2 == 0
+            board, plies = Board(), 0
+            while plies < max_plies:
+                legal = board.legal_moves()
+                if not legal or board.outcome(legal):
+                    break
+                if (board.turn == 0) == model_white:
+                    m = engine.choose("m", board, 1.0 if plies < random_plies else model_temp, legal)
+                else:
+                    _, best = sf.analyse(board.fen(), movetime=movetime)
+                    m = next(x for x in legal if move_uci(x) == best)
+                board.make(m)
+                plies += 1
+            out = board.outcome()
+            if out is None or out[0] == "1/2-1/2":
+                d += 1
+            elif (out[0] == "1-0") == model_white:
+                w += 1
+            else:
+                l += 1
+    return w, d, l
+
+
+def run_levels(args, device):
+    lo, hi = (int(x) for x in args.levels.split("-"))
+    print(f"Model vs Stockfish skill levels {lo}-{hi}: {args.games} games per level (colours alternate), "
+          f"Stockfish {args.movetime} ms/move, model T={args.model_temp}\n")
+    print(f"{'level':>5} {'W':>3} {'D':>3} {'L':>3}  score")
+    for lvl in range(lo, hi + 1):
+        w, d, l = match(args.model, device, lvl, args.games, args.movetime, args.model_temp, args.random_plies,
+                        args.max_plies, args.stockfish, args.seed)
+        print(f"{lvl:>5} {w:>3} {d:>3} {l:>3}  {(w + d / 2) / args.games:5.0%}", flush=True)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model", default=str(config.BASE_MODEL), help="checkpoint to test (default: models/base.pt)")
@@ -104,16 +149,25 @@ def main():
     ap.add_argument("--games", type=int, default=10, help="self-play games per temperature")
     ap.add_argument("--temps", default="0,1", help="comma-separated temperatures (default 0,1)")
     ap.add_argument("--depth", type=int, default=DEFAULT_DEPTH, help="Stockfish depth per position")
-    ap.add_argument("--random-plies", type=int, default=6, help="opening plies sampled at T=1 for variety (not rated)")
+    ap.add_argument("--random-plies", type=int, default=6, help="opening plies sampled at T=1 for variety (not rated in strength mode)")
     ap.add_argument("--max-plies", type=int, default=120)
     ap.add_argument("--stockfish", help="path to the Stockfish binary")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--levels", help="match mode: play Stockfish skill levels, e.g. 0-20 (replaces the other checks)")
+    ap.add_argument("--movetime", type=int, default=100, help="match mode: Stockfish milliseconds per move")
+    ap.add_argument("--model-temp", type=float, default=0.0, help="match mode: model temperature")
     args = ap.parse_args()
     if not os.path.exists(args.model):
         sys.exit(f"model not found: {args.model}")
     device = "cuda" if torch.cuda.is_available() else "cpu"
     net = load_model(args.model, device)
     print(f"Model: {args.model}  {net.config}  ({sum(p.numel() for p in net.parameters()):,} parameters, {device})\n")
+    if args.levels:
+        try:
+            run_levels(args, device)
+        except StockfishError as e:
+            sys.exit(f"\n{e}")
+        return
     if args.data.lower() != "none":
         prediction_accuracy(net, args.data, args.positions, device)
     if not args.skip_play:
