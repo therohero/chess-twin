@@ -25,6 +25,11 @@ python -m chesstwin --no-browser # run the app on :8000
 - The net has no value head, so the search is material-only: `root_scores` (negamax depth 2/3 + capture quiescence, check evasions searched, node budget). Scores are absolute material from the mover's view, not deltas.
 - `Engine.choose(..., search=d)` keeps moves within `SEARCH_MARGIN` (150 cp) of the best, then samples by policy/temperature as usual. API: `bot-move` body `search` 0..3; UI "Blunder check" Off/Light(2)/Strong(3). `analyze_model.py --search`.
 
+## Move history & twin accuracy
+- `ChessNet(history=K)` takes the last K moves as from/to planes (`schess.encoding`: `history_moves(board)` live, `sequence_history(moves, games, K)` from shard rows). Every sample dict carries `hist` (HISTORY_MAX=8 columns); the net slices what it needs, history-free checkpoints ignore it. Always pass `hist` when calling a net (`net(sq, meta, hist)`).
+- Measured (A/B, 18M positions, 1 epoch): no history 44.1% top-1 → K=4 45.0% → K=8 45.2%.
+- Twin fine-tuning (`training.py`): ~6 epochs at 4e-4, epoch chosen by validation **log-loss** (not top-1; "Like you" samples from the probabilities), validation = every 10th game. Tried and rejected: recency weighting, label smoothing, frozen early layers, lower LR.
+
 ## Gotchas
 - `ProfileStore.save()` **moves** the model file it is given. Never pass it `models/base.pt` (a test once deleted the real base model this way) – copy first.
 - The generic opponent (`profile == "base"`) can be analysed but never learns.

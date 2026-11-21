@@ -163,7 +163,9 @@ python preprocess.py games.pgn.zst --out data_base --elo-range 1800-2400
 python train.py --data data_base --channels 64 --blocks 4 --epochs 3 --out checkpoints/model.pt
 ```
 
-Other useful flags: `--batch-size`, `--lr`, `--val-size`, `--max-games` (quick test run) and `--resume checkpoints/last.pt`. The best checkpoint by held-out top-1 accuracy is written to `--out`; `last.pt` next to it allows resuming. A GPU is used automatically if available; on CPU expect it to be slow for large datasets, so start with `--max-games 20000` to try things out.
+Other useful flags: `--batch-size`, `--lr`, `--val-size`, `--max-games` (quick test run), `--shards N` (only the first N shards, for quick comparisons), `--stream K` (keep only K shards in RAM, for datasets larger than memory) and `--resume checkpoints/last.pt`.
+
+`--history 8` also feeds the network the last 8 moves (who just moved what), which makes it predict human moves better: in an A/B on 18M positions top-1 went from 44.1% to 45.2% (4 moves: 45.0%). The history is rebuilt from the shards, so existing shards work as they are, as long as they were made without `--skip-plies`. The app, twin training and the analysis tools pass history automatically to models trained this way; older checkpoints keep working unchanged. The best checkpoint by held-out top-1 accuracy is written to `--out`; `last.pt` next to it allows resuming. A GPU is used automatically if available; on CPU expect it to be slow for large datasets, so start with `--max-games 20000` to try things out.
 
 To use the result in the app, copy it over the base model (or point to it without overwriting):
 
