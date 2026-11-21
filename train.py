@@ -5,6 +5,7 @@
 import argparse
 import glob
 import os
+import random
 import time
 
 import numpy as np
@@ -38,6 +39,23 @@ def load_data(path, max_positions, max_games):
     return torch.from_numpy(sq), torch.from_numpy(meta), torch.from_numpy(mv.astype(np.int64))
 
 
+def shard_files(path):
+    files = sorted(glob.glob(os.path.join(path, "shard_*.npz")))
+    if not files:
+        raise SystemExit(f"no shard_*.npz found in {path} - run preprocess.py first")
+    return files
+
+
+def load_chunks(chunks):
+    """chunks: list of (file, start, stop). Returns tensors for the concatenated slices."""
+    sq, meta, mv = [], [], []
+    for f, a, b in chunks:
+        d = np.load(f)
+        sq.append(d["squares"][a:b]); meta.append(d["meta"][a:b]); mv.append(d["move"][a:b])
+    return (torch.from_numpy(np.concatenate(sq)), torch.from_numpy(np.concatenate(meta)),
+            torch.from_numpy(np.concatenate(mv).astype(np.int64)))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", default="data")
@@ -52,17 +70,32 @@ def main():
     ap.add_argument("--max-games", type=int, default=0, help="train on only the first N games (quick test run)")
     ap.add_argument("--max-positions", type=int, default=0)
     ap.add_argument("--resume", default="")
+    ap.add_argument("--stream", type=int, default=0, metavar="K",
+                    help="don't load everything into RAM: train on K shards at a time, shuffled across them "
+                         "(for datasets larger than memory; ignores --max-games/--max-positions)")
     args = ap.parse_args()
 
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     print("device:", dev)
-    sq, meta, mv = load_data(args.data, args.max_positions, args.max_games)
-    n = len(mv) - args.val_size
-    if n <= 0:
-        raise SystemExit("not enough data for the validation split; lower --val-size")
-    # positions within a game are consecutive in the files, so the tail split is mostly unseen games
-    vsq, vmeta, vmv = sq[n:], meta[n:], mv[n:]
-    sq, meta, mv = sq[:n], meta[:n], mv[:n]
+    if args.stream:
+        files = shard_files(args.data)
+        sizes = [len(np.load(f)["move"]) for f in files]
+        if sizes[-1] <= args.val_size:
+            raise SystemExit("last shard is smaller than --val-size; lower --val-size")
+        # validation = tail of the last shard (mostly unseen games), as in the in-memory mode
+        cut = sizes[-1] - args.val_size
+        train_chunks = [(f, 0, k) for f, k in zip(files[:-1], sizes[:-1])] + [(files[-1], 0, cut)]
+        vsq, vmeta, vmv = load_chunks([(files[-1], cut, sizes[-1])])
+        n = sum(b - a for _, a, b in train_chunks)
+        print(f"streaming {len(files)} shards, {n:,} training positions, {args.stream} shards in memory", flush=True)
+    else:
+        sq, meta, mv = load_data(args.data, args.max_positions, args.max_games)
+        n = len(mv) - args.val_size
+        if n <= 0:
+            raise SystemExit("not enough data for the validation split; lower --val-size")
+        # positions within a game are consecutive in the files, so the tail split is mostly unseen games
+        vsq, vmeta, vmv = sq[n:], meta[n:], mv[n:]
+        sq, meta, mv = sq[:n], meta[:n], mv[:n]
 
     net = ChessNet(args.channels, args.blocks).to(dev)
     ck = None
@@ -80,6 +113,8 @@ def main():
     elif ck is not None:
         print("resumed weights only: optimizer/LR schedule start fresh")
     use_amp = dev == "cuda"
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)   # fp16 needs loss scaling; also skips overflowing steps
+    skipped = 0
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
 
     def evaluate():
@@ -98,18 +133,49 @@ def main():
         k = len(vmv)
         return loss / k, top1 / k, top3 / k
 
-    for epoch in range(start_epoch, args.epochs):
+    def batches_in_memory():
         perm = torch.randperm(n)
-        t0, run_loss, run_acc = time.time(), 0.0, 0.0
         for step in range(steps_per_epoch):
             idx = perm[step * args.batch_size:(step + 1) * args.batch_size]
-            s, m, y = sq[idx].to(dev, non_blocking=True), meta[idx].to(dev), mv[idx].to(dev)
+            yield sq[idx], meta[idx], mv[idx]
+
+    def batches_streamed():
+        order = train_chunks[:]
+        random.shuffle(order)
+        rest = None   # positions left over from the previous group, carried into the next one
+        for g in range(0, len(order), args.stream):
+            gs, gm, gy = load_chunks(order[g:g + args.stream])
+            if rest is not None:
+                gs, gm, gy = torch.cat([rest[0], gs]), torch.cat([rest[1], gm]), torch.cat([rest[2], gy])
+            perm = torch.randperm(len(gy))
+            full = len(perm) // args.batch_size * args.batch_size
+            for i in range(0, full, args.batch_size):
+                idx = perm[i:i + args.batch_size]
+                yield gs[idx], gm[idx], gy[idx]
+            idx = perm[full:]
+            rest = (gs[idx], gm[idx], gy[idx])
+            del gs, gm, gy
+
+    for epoch in range(start_epoch, args.epochs):
+        batches = batches_streamed() if args.stream else batches_in_memory()
+        t0, run_loss, run_acc = time.time(), 0.0, 0.0
+        for step, (s, m, y) in zip(range(steps_per_epoch), batches):
+            s, m, y = s.to(dev, non_blocking=True), m.to(dev), y.to(dev)
             with torch.autocast(dev, enabled=use_amp):
                 lg = net(s, m)
             loss = F.cross_entropy(lg.float(), y)
+            if not torch.isfinite(loss):          # bad batch: skip it instead of poisoning the weights
+                skipped += 1
+                if skipped > 100:
+                    raise SystemExit("too many non-finite losses; aborting (last.pt from the previous epoch is still good)")
+                sched.step()
+                continue
             opt.zero_grad(set_to_none=True)
-            loss.backward()
-            opt.step()
+            scaler.scale(loss).backward()
+            scaler.unscale_(opt)
+            torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
+            scaler.step(opt)
+            scaler.update()
             sched.step()
             run_loss += loss.item() if step % 20 == 0 else 0
             run_acc += (lg.argmax(1) == y).float().mean().item() if step % 20 == 0 else 0
@@ -120,6 +186,8 @@ def main():
                 run_loss = run_acc = 0.0
         vl, v1, v3 = evaluate()
         print(f"== epoch {epoch+1}: val loss {vl:.3f} top1 {v1:.3f} top3 {v3:.3f}", flush=True)
+        if not all(torch.isfinite(p).all() for p in net.state_dict().values() if p.is_floating_point()):
+            raise SystemExit("weights contain NaN/inf; not saving a checkpoint")
         if v1 >= best:
             best = v1
             torch.save({"config": net.config, "state_dict": net.state_dict(), "val_top1": v1}, args.out)
