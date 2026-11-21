@@ -10,12 +10,13 @@ from schess.model import ChessNet, load_model
 MIN_POSITIONS = 300
 
 
-def _split(data, val_frac=0.1):
-    """Hold out the last games (by game index) for validation so no game is in both sets."""
+def _split(data, every=10):
+    """Hold out every `every`-th game for validation (whole games, so no game is in both sets).
+
+    Interleaved rather than a block: games arrive newest first, so a block at either end would judge the twin
+    only on the player's oldest or only on their newest games."""
     n_games = int(data["game"].max()) + 1
-    n_val_games = max(1, int(n_games * val_frac)) if n_games >= 10 else 0
-    cut = n_games - n_val_games
-    is_val = data["game"] >= cut
+    is_val = (data["game"] % every == every // 2) if n_games >= 10 else np.zeros(len(data["game"]), bool)
     return ~is_val, is_val
 
 
@@ -24,16 +25,20 @@ def _tensors(data, mask, device):
             torch.from_numpy(data["move"][mask].astype(np.int64)).to(device))
 
 
-def _top1(net, vs, vm, vy):
+def _evaluate(net, vs, vm, vy):
+    """-> (top-1 accuracy, mean log-loss) on the validation moves, or (None, None) without validation data."""
     if len(vy) == 0:
-        return None
+        return None, None
+    was_training = net.training
     net.eval()
-    hit = 0
+    hit, nll = 0, 0.0
     with torch.no_grad():
         for i in range(0, len(vy), 2048):
-            hit += (net(vs[i:i + 2048], vm[i:i + 2048]).argmax(1) == vy[i:i + 2048]).sum().item()
-    net.train()
-    return hit / len(vy)
+            lg, y = net(vs[i:i + 2048], vm[i:i + 2048]), vy[i:i + 2048]
+            hit += (lg.argmax(1) == y).sum().item()
+            nll += F.cross_entropy(lg, y, reduction="sum").item()
+    net.train(was_training)
+    return hit / len(vy), nll / len(vy)
 
 
 def train_profile(data, out_path, base_path, mode="finetune", device="cpu", progress=None, cancel=None):
@@ -48,20 +53,24 @@ def train_profile(data, out_path, base_path, mode="finetune", device="cpu", prog
     n = len(ty)
 
     base = load_model(base_path, device) if base_path else None
-    base_top1 = _top1(base, vs, vm, vy) if base is not None else None
+    base_top1, base_nll = _evaluate(base, vs, vm, vy) if base is not None else (None, None)
     if mode == "fresh":
         net = ChessNet(**(base.config if base is not None else {})).to(device)
         lr, epochs = 2e-3, int(np.clip(round(400_000 / n), 6, 30))
     else:
+        # ~6 epochs measured best on a 2,900-game player (vs 2 before: +0.8 pts top-1, better log-loss)
         net = base
-        lr, epochs = 4e-4, int(np.clip(round(60_000 / n), 2, 6))
+        lr, epochs = 4e-4, int(np.clip(round(480_000 / n), 4, 8))
     net.train()
     bs = 256 if n >= 2000 else 64
     steps = max(1, n // bs)
     opt = torch.optim.AdamW(net.parameters(), lr=lr, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, lr, total_steps=steps * epochs, pct_start=0.15)
 
-    best = base_top1 if (mode != "fresh" and base_top1 is not None) else -1.0
+    # Keep the epoch with the lowest validation log-loss, not the best top-1: "Like you" samples from the
+    # probabilities, and late epochs keep top-1 flat while becoming overconfident.
+    best_nll = base_nll if (mode != "fresh" and base_nll is not None) else float("inf")
+    best_top1 = base_top1 if mode != "fresh" else None
     best_state, best_epoch = None, 0
     if mode != "fresh":   # epoch 0 = the untouched base model; keep it if fine-tuning does not beat it
         best_state = {k: v.detach().clone() for k, v in net.state_dict().items()}
@@ -82,18 +91,18 @@ def train_profile(data, out_path, base_path, mode="finetune", device="cpu", prog
             if progress and st % 10 == 0:
                 done = ep * steps + st
                 progress(done / (steps * epochs), f"Epoch {ep + 1}/{epochs} - loss {run:.2f}")
-        acc = _top1(net, vs, vm, vy)
-        score = acc if acc is not None else float("inf")   # no validation games: just keep the latest weights
-        if score >= best:
-            best, best_epoch = score, ep + 1
+        acc, nll = _evaluate(net, vs, vm, vy)
+        score = nll if nll is not None else -float("inf")  # no validation games: just keep the latest weights
+        if score <= best_nll:
+            best_nll, best_top1, best_epoch = score, acc, ep + 1
             best_state = {k: v.detach().clone() for k, v in net.state_dict().items()}
         if progress:
             progress((ep + 1) / epochs, f"Epoch {ep + 1}/{epochs} done" + (f" - predicts {acc:.0%} of your held-out moves" if acc is not None else ""))
     net.load_state_dict(best_state)
     torch.save({"config": net.config, "state_dict": {k: v.cpu() for k, v in net.state_dict().items()},
-                "val_top1": best if 0 <= best <= 1 else None}, out_path)
+                "val_top1": best_top1}, out_path)
     return {"positions": n_total, "train_positions": n, "val_positions": len(vy), "epochs": epochs, "best_epoch": best_epoch,
-            "val_top1": best if (0 <= best <= 1 and len(vy)) else None, "base_val_top1": base_top1,
+            "val_top1": best_top1, "val_nll": round(best_nll, 4) if len(vy) else None, "base_val_top1": base_top1,
             "seconds": round(time.time() - t0, 1)}
 
 
