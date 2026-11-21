@@ -28,6 +28,7 @@ function show(view) {
 
 /* ------------------------------------------------------------------ setup */
 let profiles = [];
+let stockfish = false;
 const initials = (n) => (n || "?").slice(0, 2).toUpperCase();
 
 async function loadStatus() {
@@ -35,6 +36,7 @@ async function loadStatus() {
     const s = await api("/status");
     $("#device-badge").textContent = s.device_name;
     $("#device-badge").title = s.device === "cpu" ? "Running on the CPU. A GPU is used automatically when available." : "Training is accelerated by your GPU";
+    stockfish = !!s.stockfish;
     if (s.busy) resumeTraining();
   } catch { $("#device-badge").textContent = "offline"; }
 }
@@ -212,6 +214,8 @@ function drawSide() {
   $("#opp-avatar").textContent = prof && prof.kind === "twin" ? initials(prof.name) : "AI";
   $("#btn-undo").disabled = busy || game.moves.length === 0;
   $("#btn-resign").disabled = !!r;
+  $("#btn-analyse").hidden = !r || !game.moves.length;
+  $("#go-analyse").hidden = !game.moves.length;
   const go = $("#gameover");
   go.hidden = !r || viewOver;
   if (r) { const t = resultText(); $("#go-title").textContent = t.title; $("#go-sub").textContent = t.sub; }
@@ -337,6 +341,103 @@ function askNewGame() {
   dlg.returnValue = ""; dlg.showModal();
 }
 $("#btn-new").onclick = askNewGame; $("#go-new").onclick = askNewGame;
+
+/* ------------------------------------------------------------------ analysis (Stockfish) */
+const LABEL_TEXT = { best: "Best", excellent: "Excellent", good: "Good", inaccuracy: "Inaccuracy", mistake: "Mistake", blunder: "Blunder" };
+let anTimer = null;
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+
+async function openAnalysis() {
+  if (!game) return;
+  const gid = game.id;
+  show("analysis");
+  $("#an-body").hidden = true; $("#an-error").hidden = true; $("#an-progress").hidden = false;
+  $("#an-bar").style.width = "0%"; $("#an-msg").textContent = "Starting Stockfish…";
+  clearInterval(anTimer);
+  try {
+    let j = await api(`/games/${gid}/analysis`, { body: {} });
+    const tick = async () => {
+      if (j.status === "running") {
+        $("#an-bar").style.width = (j.progress * 100).toFixed(0) + "%"; $("#an-msg").textContent = j.message;
+        j = await api(`/games/${gid}/analysis`).catch(() => j);
+        if (j.status === "running") return;
+      }
+      clearInterval(anTimer);
+      if (j.status === "done" && j.moves) renderAnalysis(j);
+      else analysisError(j.error || "The analysis did not finish. Try again.");
+    };
+    if (j.status === "running" || j.status === "done") { anTimer = setInterval(tick, 500); tick(); }
+    else analysisError("Unexpected response from the server.");
+  } catch (e) { analysisError(e.message); }
+}
+function analysisError(msg) {
+  $("#an-progress").hidden = true; $("#an-error").textContent = msg; $("#an-error").hidden = false;
+}
+
+function renderAnalysis(a) {
+  $("#an-progress").hidden = true; $("#an-body").hidden = false;
+  const sides = $("#an-sides"); sides.replaceChildren();
+  const prof = profiles.find((p) => p.id === game.profile);
+  const botName = prof ? prof.name + (prof.kind === "twin" ? " (twin)" : "") : "Opponent";
+  const bot = a.human === "white" ? "black" : "white";
+  for (const [color, name] of [[a.human, "You"], [bot, botName]]) {
+    const s = a[color], box = el("div", "an-side");
+    box.append(el("h3", "", `${name} · ${color}`));
+    const acc = el("div", "acc", s.accuracy == null ? "–" : s.accuracy.toFixed(1)); acc.append(el("small", "", " accuracy"));
+    box.append(acc);
+    box.append(el("div", "hint", s.avg_loss == null ? "" : `average loss ${s.avg_loss.toFixed(1)} win-% per move`));
+    const counts = el("div", "an-counts");
+    for (const k of ["best", "excellent", "good", "inaccuracy", "mistake", "blunder"]) if (s.counts[k]) counts.append(el("span", "lb-" + k, `${s.counts[k]} ${LABEL_TEXT[k].toLowerCase()}`));
+    box.append(counts); sides.append(box);
+  }
+  drawChart(a.evals);
+  const list = $("#an-moves"); list.replaceChildren();
+  a.moves.forEach((m, i) => {
+    if (m.color === "white") list.append(el("span", "n", (m.ply + 1) / 2 + "."));
+    else if (i === 0) { list.append(el("span", "n", "1…"), el("span")); }
+    const c = el("div", "an-move lb-" + m.label, m.san + (m.label === "blunder" ? " ??" : m.label === "mistake" ? " ?" : m.label === "inaccuracy" ? " ?!" : ""));
+    const bad = ["inaccuracy", "mistake", "blunder"].includes(m.label);
+    c.append(el("small", "", LABEL_TEXT[m.label] + (bad && m.best_san ? ` · better: ${m.best_san}` : "")));
+    list.append(c);
+  });
+  renderLearn(a);
+}
+function drawChart(evals) {
+  const svg = $("#an-chart"), W = 600, H = 120, ns = "http://www.w3.org/2000/svg";
+  svg.replaceChildren();
+  const y = (cp) => { const p = 1 / (1 + Math.exp(-0.00368208 * Math.max(-3000, Math.min(3000, cp)))); return H * (1 - p); };
+  const x = (i) => (evals.length < 2 ? 0 : (i / (evals.length - 1)) * W);
+  const mk = (t, attrs) => { const e = document.createElementNS(ns, t); for (const k in attrs) e.setAttribute(k, attrs[k]); svg.append(e); return e; };
+  const pts = evals.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`);
+  mk("polygon", { points: `0,${H} ${pts.join(" ")} ${W},${H}`, style: "fill:var(--surface2)" });   // white's share of the board
+  mk("line", { x1: 0, x2: W, y1: H / 2, y2: H / 2, style: "stroke:var(--muted)", "stroke-dasharray": "4 4", "vector-effect": "non-scaling-stroke" });
+  mk("polyline", { points: pts.join(" "), fill: "none", style: "stroke:var(--accent)", "stroke-width": 2, "vector-effect": "non-scaling-stroke" });
+}
+function renderLearn(a) {
+  const box = $("#an-learn"), btn = $("#an-learn-btn"), txt = $("#an-learn-text");
+  box.hidden = !(a.can_learn || a.learned);
+  if (box.hidden) return;
+  const w = a.weighting, pct = Math.round(w.strength * 100);
+  txt.textContent = a.learned ? "Your twin has learned from this game."
+    : w.mode === "player_worse" ? `The twin played ${Math.abs(w.gap).toFixed(0)} accuracy points better than you, so it is stronger than the real you right now. It will learn mainly from your mistakes (weighted up) and less from your good moves, which it already plays. Strength: ${pct}%.`
+    : w.mode === "player_better" ? `You played ${Math.abs(w.gap).toFixed(0)} accuracy points better than the twin. It will learn mainly from your good moves and give your slips less weight, so it gets closer to your best play. Strength: ${pct}%.`
+    : "You and the twin played about equally well, so all your moves count the same.";
+  btn.disabled = a.learned; btn.textContent = a.learned ? "Learned ✓" : "Let my twin learn from this game";
+  btn.onclick = async () => {
+    btn.disabled = true; btn.textContent = "Learning…";
+    try {
+      const r = await api(`/games/${game.id}/learn`, { method: "POST" });
+      game.learned = true; a.learned = true; renderLearn(a);
+      toast(`Your twin learned from ${r.positions} of your moves.`);
+    } catch (e) { toast(e.message); btn.disabled = false; btn.textContent = "Let my twin learn from this game"; }
+  };
+}
+async function analyseClicked() {
+  if (!stockfish) { toast("Stockfish isn't installed. Install it (e.g. `apt install stockfish`) or set CHESSTWIN_STOCKFISH, then restart Chess Twin."); return; }
+  openAnalysis();
+}
+$("#btn-analyse").onclick = analyseClicked; $("#go-analyse").onclick = analyseClicked;
+$("#an-back").onclick = () => { clearInterval(anTimer); viewOver = true; show("play"); render_(); };
 
 /* ------------------------------------------------------------------ boot */
 (async function init() {

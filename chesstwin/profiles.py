@@ -33,6 +33,9 @@ class ProfileStore:
         except (OSError, ValueError):
             return None
 
+    def meta(self, pid):
+        return self._read(self.root / slug(pid)) or {}
+
     def list(self):
         out = []
         if self.base_model.exists():
@@ -55,6 +58,16 @@ class ProfileStore:
             meta = {**meta, "username": username, "trained_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
             (d / "meta.json").write_text(json.dumps(meta, indent=2))
         return pid
+
+    def update(self, pid, tmp_model, **meta_updates):
+        """Replace a twin's model in place (e.g. after learning from a game) and merge `meta_updates` into its meta."""
+        with self._lock:
+            d = self.root / slug(pid)
+            meta = self._read(d)
+            if pid == BASE_ID or meta is None:
+                raise KeyError(pid)
+            shutil.move(str(tmp_model), d / "model.pt")
+            (d / "meta.json").write_text(json.dumps({**meta, **meta_updates}, indent=2))
 
     def delete(self, pid):
         d = self.root / slug(pid)

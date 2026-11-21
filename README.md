@@ -44,6 +44,17 @@ Open http://localhost:8000. Twins are stored in the `chesstwin-data` volume, so 
 
 Under the hood this is the sampling temperature of the policy network (`slider / 50`).
 
+5. **Game analysis** (needs [Stockfish](https://stockfishchess.org/download/)) – when a game ends, click **Analyse game**. Stockfish rates every move (best / excellent / good / inaccuracy / mistake / blunder), shows an accuracy score for you and the bot, an evaluation graph and the better move for every slip.
+6. **Teach your twin** – after an analysis you can let your twin learn from the game. It is fine-tuned briefly on *your* moves from that game, weighted by how good Stockfish found them, depending on who played better:
+
+| Result of the analysis | Weighting of your moves |
+|---|---|
+| **You played worse** than the twin | your mistakes count more, your good moves less – the twin is too strong for a copy of you, so it should pick up the slips it doesn't make yet |
+| **You played better** than the twin | your good moves count more, your slips less – the twin learns from your best play |
+| about equal (< 3 accuracy points) | all moves count the same |
+
+The effect scales with the accuracy gap (full strength at 20 points) and the update is deliberately small (12 gentle steps), each game can be learned from once, and only your own twin learns – never the generic opponent. Re-creating the twin from Lichess starts over from the base model and discards what was learned from games.
+
 A built-in **Generic opponent** (the base model) is always available, so you can try the board before creating a twin. Re-entering a username retrains that twin with fresh games.
 
 ## How it works
@@ -55,13 +66,39 @@ A built-in **Generic opponent** (the base model) is always available, so you can
 * **Stack** – FastAPI + PyTorch backend, dependency-free vanilla JS frontend (own board renderer, no CDN, works offline). No build step.
 
 ```
-chesstwin/      web app: server.py (API), lichess.py, training.py, engine.py, games.py, static/ (UI)
+chesstwin/      web app: server.py (API), lichess.py, training.py, engine.py, games.py, analysis.py (Stockfish), static/ (UI)
 schess/         chess rules, SAN/PGN parsing, move encoding, the network
 models/base.pt  base policy used for fine-tuning and as the generic opponent
 preprocess.py / train.py / play.py   original pipeline: build a dataset, train a base model, desktop UI
+analyze.py      Stockfish analysis of a PGN game from the command line
 data/           created at runtime: data/profiles/<username>/{model.pt,meta.json}
 tests/          pytest suite
 ```
+
+## Game analysis from the command line
+
+`analyze.py` runs the same Stockfish analysis on any PGN (or a list of UCI moves), e.g. a game you played elsewhere:
+
+```bash
+python analyze.py game.pgn                       # first game in the file
+python analyze.py games.pgn --game 3 --depth 18
+python analyze.py --moves "e2e4 e7e5 g1f3 b8c6"
+python analyze.py game.pgn --json > report.json
+```
+
+Install Stockfish with your package manager (`apt install stockfish`, `pacman -S stockfish`, `brew install stockfish`) or point `CHESSTWIN_STOCKFISH` / `--stockfish` at a binary. The Docker image already contains it. Move quality is the drop in winning chances (Lichess win% model) compared with Stockfish's best move: ≤0.5 best, ≤2 excellent, ≤5 good, ≤10 inaccuracy, ≤20 mistake, above that blunder. Accuracy uses the Lichess accuracy curve.
+
+## Checking the base model
+
+`analyze_model.py` (project root) measures how good a model is – by default `models/base.pt`:
+
+```bash
+python analyze_model.py                                   # prediction accuracy + Stockfish strength check
+python analyze_model.py --model checkpoints/model.pt --games 20 --depth 12 --temps 0,0.5,1
+python analyze_model.py --skip-play                       # only top-1/top-5 on human moves (no Stockfish)
+```
+
+It reports top-1/top-5 prediction accuracy on a preprocessed shard (`--data data_base`), then lets the model play itself at each temperature and has Stockfish rate every move it chose (accuracy, win-% lost per move, share of best moves / mistakes / blunders).
 
 ## Configuration
 
@@ -70,6 +107,7 @@ tests/          pytest suite
 | `CHESSTWIN_DATA` | where twins are stored (default `./data`) |
 | `CHESSTWIN_DEVICE` | `cpu` or `cuda` to force a device (default: auto) |
 | `CHESSTWIN_BASE_MODEL` | path to a different base model |
+| `CHESSTWIN_STOCKFISH` | path to the Stockfish binary (default: `stockfish` on PATH) |
 | `LICHESS_TOKEN` | optional Lichess API token; raises download rate limits |
 
 ## Tips & limits

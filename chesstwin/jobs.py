@@ -45,7 +45,7 @@ class JobManager:
         self.job = None
         self._lock = threading.Lock()
 
-    def start(self, params, fn):
+    def start(self, params, fn, done_message="Your twin is ready!"):
         """fn(job) runs in a thread; it should call job.update(...) and return the result dict."""
         with self._lock:
             if self.job and self.job.status == "running":
@@ -56,7 +56,7 @@ class JobManager:
             try:
                 job.result = fn(job)
                 job.status = "done"
-                job.update("save", 1.0, "Your twin is ready!")
+                job.update("save", 1.0, done_message)
             except (InterruptedError, KeyboardInterrupt):
                 job.status = "cancelled"
                 job.message = "Cancelled."

@@ -95,3 +95,35 @@ def train_profile(data, out_path, base_path, mode="finetune", device="cpu", prog
     return {"positions": n_total, "train_positions": n, "val_positions": len(vy), "epochs": epochs, "best_epoch": best_epoch,
             "val_top1": best if (0 <= best <= 1 and len(vy)) else None, "base_val_top1": base_top1,
             "seconds": round(time.time() - t0, 1)}
+
+
+LEARN_LR = 1e-4       # small: one game should nudge the twin, not rewrite it
+LEARN_STEPS = 12
+
+
+def learn_from_game(samples, model_path, out_path, device="cpu"):
+    """Nudge an existing twin towards the human's moves of one analysed game, weighted per move.
+
+    samples: dict from chesstwin.analysis.training_samples (squares, meta, move, weight).
+    Writes the updated checkpoint to out_path and returns {"positions", "loss_before", "loss_after"}.
+    """
+    net = load_model(model_path, device)       # eval mode: batch-norm statistics stay frozen (the batch is tiny)
+    s = torch.from_numpy(samples["squares"]).to(device)
+    m = torch.from_numpy(samples["meta"]).to(device)
+    y = torch.from_numpy(samples["move"]).to(device)
+    w = torch.from_numpy(samples["weight"]).to(device)
+
+    def loss_fn():
+        return (F.cross_entropy(net(s, m), y, reduction="none") * w).mean()
+    with torch.no_grad():
+        before = loss_fn().item()
+    opt = torch.optim.AdamW(net.parameters(), lr=LEARN_LR, weight_decay=0.0)
+    for _ in range(LEARN_STEPS):
+        opt.zero_grad(set_to_none=True)
+        loss_fn().backward()
+        opt.step()
+    with torch.no_grad():
+        after = loss_fn().item()
+    torch.save({"config": net.config, "state_dict": {k: v.cpu() for k, v in net.state_dict().items()},
+                "val_top1": None}, out_path)
+    return {"positions": len(y), "loss_before": round(before, 4), "loss_after": round(after, 4)}

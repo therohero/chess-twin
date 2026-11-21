@@ -12,3 +12,4 @@ db.pgn.zst
 *.pgn.zst
 *.log
 work/
+data_base/

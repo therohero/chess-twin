@@ -1,5 +1,6 @@
 """FastAPI app: REST API + static single-page UI."""
 import logging
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -8,13 +9,15 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import __version__, config, lichess
+from schess.rules import WHITE
+
+from . import __version__, analysis as sf, config, lichess
 from .device import describe, pick_device
 from .engine import Engine
 from .games import GameStore, IllegalMove
 from .jobs import Busy, JobManager
 from .profiles import BASE_ID, ProfileStore
-from .training import train_profile
+from .training import learn_from_game, train_profile
 
 log = logging.getLogger("chesstwin")
 STATIC = Path(__file__).parent / "static"
@@ -38,6 +41,10 @@ class MoveReq(BaseModel):
     uci: str
 
 
+class AnalysisReq(BaseModel):
+    depth: int = Field(sf.DEFAULT_DEPTH, ge=6, le=24)
+
+
 class BotReq(BaseModel):
     temperature: float = Field(1.0, ge=0.0, le=3.0)
 
@@ -50,7 +57,7 @@ def create_app(data_dir=None, base_model=None, device=None, games_source=None):
     device = pick_device(device or config.DEVICE)
     store = ProfileStore(data_dir, base_model or config.BASE_MODEL)
     engine = Engine(store, device)
-    games, jobs = GameStore(), JobManager()
+    games, jobs, analysis_jobs = GameStore(), JobManager(), JobManager()
     log.info("Chess Twin using %s", describe(device))
 
     def default_source(username, max_games, time_controls, color, rated_only, cancel):
@@ -61,7 +68,7 @@ def create_app(data_dir=None, base_model=None, device=None, games_source=None):
     @app.get("/api/status")
     def status():
         return {"version": __version__, "device": device, "device_name": describe(device),
-                "base_model": store.base_model.exists(), "busy": bool(jobs.job and jobs.job.status == "running")}
+                "base_model": store.base_model.exists(), "stockfish": bool(sf.find_stockfish(config.STOCKFISH)), "busy": bool(jobs.job and jobs.job.status == "running")}
 
     @app.get("/api/profiles")
     def profiles():
@@ -167,6 +174,72 @@ def create_app(data_dir=None, base_model=None, device=None, games_source=None):
         if not g.result():
             g.resigned = True
         return g.state()
+
+    # ------------------------------------------------------------------ analysis (Stockfish) + learning from a game
+    def _analysis_payload(g):
+        a = g.analysis
+        w = sf.weighting(a, "white" if g.human == WHITE else "black")
+        return {"status": "done", "human": "white" if g.human == WHITE else "black", "weighting": w,
+                "can_learn": g.profile != BASE_ID and not g.learned, "learned": g.learned, **a}
+
+    @app.post("/api/games/{gid}/analysis")
+    def start_analysis(gid: str, req: AnalysisReq = AnalysisReq()):
+        g = _game(gid)
+        if g.analysis is not None:
+            return _analysis_payload(g)
+        if len(g.ucis) < 2:
+            raise HTTPException(422, "Play a few moves first.")
+        if not sf.find_stockfish(config.STOCKFISH):
+            raise HTTPException(503, "Stockfish is not installed. Install it (e.g. `apt install stockfish`) "
+                                     "or set CHESSTWIN_STOCKFISH to its path, then restart Chess Twin.")
+        ucis = list(g.ucis)
+
+        def run(job):
+            with sf.UciEngine(config.STOCKFISH) as eng:
+                result = sf.analyse_game(ucis, eng, req.depth, None, lambda p, m: job.update("analyse", p, m), job.cancel)
+            if g.ucis == ucis:       # ignore the result if the game was changed (undo) meanwhile
+                g.analysis = result
+            return {"game": gid}
+        try:
+            analysis_jobs.start({"game": gid}, run, done_message="Analysis complete.")
+        except Busy:
+            raise HTTPException(409, "Another analysis is still running.") from None
+        return analysis_jobs.snapshot()
+
+    @app.get("/api/games/{gid}/analysis")
+    def get_analysis(gid: str):
+        g = _game(gid)
+        if g.analysis is not None:
+            return _analysis_payload(g)
+        j = analysis_jobs.snapshot()
+        if j and j["params"].get("game") == gid:
+            return j
+        return {"status": "idle"}
+
+    @app.post("/api/games/{gid}/learn")
+    def learn(gid: str):
+        g = _game(gid)
+        if g.analysis is None:
+            raise HTTPException(409, "Analyse the game first.")
+        if g.profile == BASE_ID or store.model_path(g.profile) is None:
+            raise HTTPException(409, "Only your own twin can learn from games - the generic opponent stays as it is.")
+        if g.learned:
+            raise HTTPException(409, "Your twin already learned from this game.")
+        samples = sf.training_samples(g.analysis, "white" if g.human == WHITE else "black")
+        if samples is None:
+            raise HTTPException(422, "There are no moves of yours to learn from.")
+        if jobs.job and jobs.job.status == "running":
+            raise HTTPException(409, "A twin is being trained right now. Try again in a moment.")
+        tmp = Path(tempfile.mkdtemp(dir=data_dir)) / "model.pt"
+        try:
+            stats = learn_from_game(samples, store.model_path(g.profile), tmp, device)
+            meta = store.meta(g.profile)
+            store.update(g.profile, tmp, games_learned=meta.get("games_learned", 0) + 1)
+        finally:
+            shutil.rmtree(tmp.parent, ignore_errors=True)
+        g.learned = True
+        engine.invalidate()
+        return {**stats, "weighting": sf.weighting(g.analysis, "white" if g.human == WHITE else "black")}
 
     # ------------------------------------------------------------------ UI
     @app.get("/", include_in_schema=False)

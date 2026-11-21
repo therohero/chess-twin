@@ -18,7 +18,10 @@ class Game:
         self.profile, self.human = profile, human
         self.board = Board()
         self.sans = []
+        self.ucis = []
         self.resigned = False
+        self.analysis = None      # filled by the Stockfish analysis (chesstwin.analysis.analyse_game)
+        self.learned = False      # True once the twin was fine-tuned on this game
 
     @property
     def bot_to_move(self):
@@ -34,6 +37,8 @@ class Game:
         if m not in legal:
             raise IllegalMove(move_uci(m))
         self.sans.append(to_san(self.board, m, legal))
+        self.ucis.append(move_uci(m))
+        self.analysis = None
         self.board.make(m)
 
     def parse(self, uci):
@@ -51,6 +56,8 @@ class Game:
             if self.board.stack:
                 self.board.unmake()
                 self.sans.pop()
+                self.ucis.pop()
+        self.analysis = None
         self.resigned = False
 
     def state(self):
@@ -70,7 +77,7 @@ class Game:
             "moves": self.sans, "last": [sq_name(last[0]), sq_name(last[1])] if last else None,
             "check": sq_name(self.board.king_square(self.board.turn)) if self.board.in_check() else None,
             "result": {"score": res[0], "reason": res[1]} if res else None,
-            "bot_to_move": self.bot_to_move,
+            "bot_to_move": self.bot_to_move, "analysed": self.analysis is not None, "learned": self.learned,
         }
 
 
